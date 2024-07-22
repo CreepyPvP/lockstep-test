@@ -1,10 +1,66 @@
 #include <stdio.h>
 #include <windows.h>
+#include <math.h>
 
 #define ENET_IMPLEMENTATION
 #include "enet.h"
 
 #include "common.cpp"
+
+void LockIn(f32 Position)
+{
+    static f32 PrevPosition = 0;
+    static f32 TotalDX = 0;
+    static f32 TotalDeviation = 0;
+    static u32 Counter = 0;
+
+    f32 DX = Position - PrevPosition;
+    TotalDX += DX;
+    ++Counter;
+
+    f32 AvgDX = TotalDX / (f32) Counter;
+
+    f32 Deviation = (DX - AvgDX) * (DX - AvgDX);
+    TotalDeviation += Deviation;
+
+    f32 StandardDeviation = sqrt(TotalDeviation / (f32) Counter);
+
+    printf("%.3f %.3f %.3f\n", DX, AvgDX, StandardDeviation);
+
+    PrevPosition = Position;
+}
+
+
+f32 Time = 0;
+f32 MPosition[2];
+f32 MTime[2];
+
+
+f32 Lerp()
+{
+    f32 F = MTime[0] - MTime[1];
+    if (!F)
+    {
+        Time = MTime[0];
+        return 1;
+    }
+
+    f32 T = (Time - MTime[1]) / F;
+
+    if (T < 0) 
+    {
+        Time = MTime[1];
+        T = 0;
+    }
+
+    if (T > 1)
+    {
+        Time = MTime[0];
+        T = 1;
+    }
+
+    return T;
+}
 
 i32 main()
 {
@@ -36,12 +92,27 @@ i32 main()
     }
 
     bool Connected = false;
-    u32 Counter = 0;
 
-    u32 Buffer[3] = {};
+    u32 IncomingSequence = 0;
+    u32 OutgoingSequence = 0;
+
+    f32 Position = 0;
+
+    u8 Memory[256];
+
+    f32 FrameTime = 1.0f / 60.0f;
 
     while (true)
     {
+        Time += FrameTime;
+
+        if (Connected) 
+        {
+            ++OutgoingSequence;
+            ENetPacket *Packet = enet_packet_create(&OutgoingSequence, sizeof(OutgoingSequence), ENET_PACKET_FLAG_UNSEQUENCED);
+            enet_peer_send(Peer, 0, Packet);
+        }
+
         ENetEvent Event;
         while (enet_host_service(Client, &Event, 0))
         {
@@ -53,13 +124,29 @@ i32 main()
                     break;
                 }
                 case ENET_EVENT_TYPE_RECEIVE: {
-                    // u32 Recv = *((u32*) (Event.packet->data));
-                    // printf("%u\n", Recv);
+                    buffer Buffer = FromMemory(Event.packet->data);
+                    u32 Sequence = ReadU32(&Buffer);
+                    f32 ServerTime = ReadF32(&Buffer);
+                    f32 IncomingPosition = ReadF32(&Buffer);
+
+                    if (Sequence > IncomingSequence) 
+                    {
+                        MPosition[1] = MPosition[0];
+                        MPosition[0] = IncomingPosition;
+                        MTime[1] = MTime[0];
+                        MTime[0] = ServerTime;
+                        IncomingSequence = Sequence;
+                    }
+
+                    if (IncomingSequence > 2500) 
+                    {
+                        exit(0);
+                    }
+
                     enet_packet_destroy(Event.packet);
                     break;
                 }
                 case ENET_EVENT_TYPE_DISCONNECT: {
-                    Connected = false;
                     printf("Disconnected\n");
                     break;
                 };
@@ -68,13 +155,12 @@ i32 main()
 
         if (Connected) 
         {
-            Buffer[0] = Buffer[1];
-            Buffer[1] = Buffer[2];
-            Buffer[2] = Counter;
-            ENetPacket *Packet = enet_packet_create(Buffer, sizeof(Buffer), ENET_PACKET_FLAG_UNSEQUENCED);
-            enet_peer_send(Peer, 0, Packet);
+            f32 T = Lerp();
+            f32 Delta = MPosition[0] - MPosition[1];
+            // printf("[%.3f - %.3f] %.3f: %.3f, %.3f: %.3f\n", Time, T, MTime[0], MPosition[0], MTime[1], MPosition[1]);
+            Position = MPosition[1] + Delta * T;
 
-            Counter++;
+            LockIn(Position);
         }
 
         Sleep(16);

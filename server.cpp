@@ -7,45 +7,6 @@
 
 #include "common.cpp"
 
-typedef int32_t i32;
-typedef uint32_t u32;
-
-u32 PlayoutBufferSize = 0;
-u32 PlayoutBuffer[32];
-
-u32 LastSequence = 0;
-u32 Correct = 0;
-u32 Wrong = 0;
-
-void LockInput(u32 Sequence)
-{
-    if (Sequence == LastSequence + 1 || (Sequence == 0 && LastSequence == 0))
-    {
-        Correct++;
-        printf("%u\n", Sequence);
-    }
-    else
-    {
-        printf("%u WRONG!\n", Sequence);
-        Wrong++;
-    }
-
-    LastSequence = Sequence;
-}
-
-void PlayoutInsert(u32 Sequence)
-{
-    for (u32 I = 0; I < PlayoutBufferSize; I++)
-    {
-        if (PlayoutBuffer[I] == Sequence)
-        {
-            return;
-        }
-    }
-
-    PlayoutBuffer[PlayoutBufferSize++] = Sequence;
-}
-
 i32 main()
 {
     SetupTimer();
@@ -70,9 +31,22 @@ i32 main()
 
     bool Active = false;
 
-    u32 Frame = 1000;
+    u32 IncomingSequence = 0;
+    u32 OutgoingSequence = 0;
+    u32 Frame = 2000;
+
+    f32 PlayerPosition = 0;
+    bool ReceivedPacket = false;
+
+    u8 Memory[256];
+
+    f32 Time = 0;
+    f32 FrameTime = 1.0f / 60.0f;
+
     while (Frame)
     {
+        Time += FrameTime;
+
         ENetEvent Event;
         while (enet_host_service(Host, &Event, 0))
         {
@@ -80,17 +54,26 @@ i32 main()
             {
                 case ENET_EVENT_TYPE_CONNECT: {
                     printf("Connected\n");
-                    Active = true;
                     break;
                 }
+
                 case ENET_EVENT_TYPE_RECEIVE: {
-                    u32 *Recv = (u32 *) Event.packet->data;
-                    PlayoutInsert(Recv[0]);
-                    PlayoutInsert(Recv[1]);
-                    PlayoutInsert(Recv[2]);
+                    Active = true;
+                    buffer Buffer = FromMemory(Event.packet->data);
+                    u32 Sequence = ReadU32(&Buffer);
+
+                    if (Sequence > IncomingSequence) 
+                    {
+                        PlayerPosition += Sequence - IncomingSequence;
+                        IncomingSequence = Sequence;
+
+                        ReceivedPacket = true;
+                    }
+
                     enet_packet_destroy(Event.packet);
                     break;
                 }
+
                 case ENET_EVENT_TYPE_DISCONNECT: {
                     printf("Disconnected\n");
                     break;
@@ -98,32 +81,26 @@ i32 main()
             }
         }
 
-        if (!Active)
+        if (Active)
         {
-            continue;
-        }
+            Frame--;
 
-        while (PlayoutBufferSize > 2)
-        {
-            u32 Min = 0;
-            for (u32 I = 1; I < PlayoutBufferSize; ++I)
+            if (ReceivedPacket) 
             {
-                if (PlayoutBuffer[I] < PlayoutBuffer[Min])
-                {
-                    Min = I;
-                }
+                buffer Buffer = FromMemory(Memory);
+                WriteU32(&Buffer, ++OutgoingSequence);
+                WriteF32(&Buffer, Time);
+                WriteF32(&Buffer, PlayerPosition);
+
+                ENetPacket *Packet = enet_packet_create(Buffer.Memory, Buffer.Offset, ENET_PACKET_FLAG_UNSEQUENCED);
+                enet_host_broadcast(Host, 0, Packet);
+
+                ReceivedPacket = false;
             }
 
-            LockInput(PlayoutBuffer[Min]);
-            PlayoutBuffer[Min] = PlayoutBuffer[PlayoutBufferSize - 1];
-            PlayoutBufferSize--;
         }
 
-        Sleep(16);
+        Sleep(1000.0f * FrameTime);
 
-        Frame--;
     }
-
-    printf("Probability correct: \t%f\n", ((f64) (Correct)) / ((f64) (Correct + Wrong)));
-    printf("Probability wrong: \t%f\n", ((f64) (Wrong)) / ((f64) (Correct + Wrong)));
 }
